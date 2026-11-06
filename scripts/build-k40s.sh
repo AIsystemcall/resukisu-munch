@@ -90,6 +90,10 @@ make -C "$KERNEL_DIR" O="$WORKDIR/out" ARCH="$ARCH" \
 # Keeps 4.2 + SUSFS + inline hooks untouched; aligns only runtime-visible
 # policy/feature deltas present in this kernel tree. Symbols absent from the
 # tree are silently dropped by olddefconfig, so this is safe across variants.
+# Only generic upstream symbols are disabled here. Vendor-private debug symbols
+# (MSM_TZ_LOG, CORESIGHT, QTI_*, ...) are referenced as `#if CONFIG_FOO` in
+# munch-s-oss sources; removing them triggers -Wundef warnings that the
+# forbidden-warning mechanism turns into a hard build failure.
 "$KERNEL_DIR/scripts/config" --file "$WORKDIR/out/.config" \
   --enable KSU_TOOLKIT_SUPPORT \
   --enable MODULE_FORCE_LOAD \
@@ -154,29 +158,8 @@ make -C "$KERNEL_DIR" O="$WORKDIR/out" ARCH="$ARCH" \
   --enable UFSHPB_31 \
   --enable UFSTW_31 \
   --disable DYNAMIC_DEBUG \
-  --disable CORESIGHT \
-  --disable DUMP_ALL_STACKS \
-  --disable IPA3_REGDUMP \
-  --disable MHI_DEBUG \
-  --disable MSM_DEBUGCC_KONA \
-  --disable MSM_TZ_LOG \
-  --disable SPMI_MSM_PMIC_ARB_DEBUG \
-  --disable VIDEO_ADV_DEBUG \
-  --disable GPIO_TESTING_MODE \
-  --disable FASTBOOT_CMD_CTRL_UART \
   --disable TASK_DELAY_ACCT \
   --disable FORTIFY_SOURCE \
-  --disable SERIAL_MSM_GENI_CONSOLE \
-  --disable NETFILTER_XT_MATCH_CONNBYTES \
-  --disable QCOM_EARLY_RANDOM \
-  --disable QTI_MAXIM_FAN_CONTROLLER \
-  --disable DVB_MPQ \
-  --disable DVB_MPQ_DEMUX \
-  --disable DVB_MPQ_SW \
-  --disable LCD_CLASS_DEVICE \
-  --disable MSM_RDBG \
-  --disable USB_GSPCA \
-  --disable QCOM_LLCC_PERFMON \
   --disable UNMAP_KERNEL_AT_EL0 \
   --disable HARDEN_BRANCH_PREDICTOR \
   --disable CRYPTO_LZO \
