@@ -27,10 +27,9 @@ index 89517dff1f51..d83f888a8bf4 100644
  	if (!inst) {
  		dprintk(CVP_ERR, "%s: invalid session\n", __func__);
 diff --git a/fs/notify/fdinfo.c b/fs/notify/fdinfo.c
-index 8d5e7739ca2e..b7de723de999 100644
 --- a/fs/notify/fdinfo.c
 +++ b/fs/notify/fdinfo.c
-@@ -96,6 +96,14 @@ static void inotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark, struct
+@@ -106,6 +106,14 @@
  	inode_mark = container_of(mark, struct inotify_inode_mark, fsn_mark);
  	inode = igrab(fsnotify_conn_inode(mark->connector));
  	if (inode) {
@@ -42,19 +41,10 @@ index 8d5e7739ca2e..b7de723de999 100644
 +		 */
 +		u32 mask = mark->mask & IN_ALL_EVENTS;
 +
- #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
- 		mnt = real_mount(file->f_path.mnt);
- 		if (mnt->mnt_id >= DEFAULT_KSU_MNT_ID &&
-@@ -125,7 +133,7 @@ static void inotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark, struct
- 			}
- 			seq_printf(m, "inotify wd:%x ino:%lx sdev:%x mask:%x ignored_mask:0 ",
- 					inode_mark->wd, path.dentry->d_inode->i_ino, path.dentry->d_inode->i_sb->s_dev,
--					inotify_mark_user_mask(mark));
-+					mask);
- 			show_mark_fhandle(m, path.dentry->d_inode);
- 			seq_putc(m, '\n');
- 			path_put(&path);
-@@ -142,13 +150,6 @@ orig_flow:
+ #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+ 		if (susfs_is_current_app_uid()) {
+ 			bool is_fuse = false;
+@@ -160,13 +168,6 @@
  		}
  orig_flow:
  #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
