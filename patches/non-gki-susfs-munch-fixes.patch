@@ -44,6 +44,24 @@ diff --git a/fs/notify/fdinfo.c b/fs/notify/fdinfo.c
  #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
  		if (susfs_is_current_app_uid()) {
  			bool is_fuse = false;
+@@ -115,7 +123,7 @@
+ 				susfs_sus_kstat_spoof_inotify_fdinfo(&ino, &dev);
+ 				seq_printf(m, "inotify wd:%x ino:%lx sdev:%x mask:%x ignored_mask:0 ",
+ 						inode_mark->wd, ino, dev,
+-						inotify_mark_user_mask(mark));
++						mask);
+ 				show_mark_fhandle(m, inode);
+ 				seq_putc(m, '\n');
+ 				iput(inode);
+@@ -145,7 +153,7 @@
+ 				}
+ 				seq_printf(m, "inotify wd:%x ino:%lx sdev:%x mask:%x ignored_mask:0 ",
+ 						inode_mark->wd, d_backing_inode(path.dentry)->i_ino, d_backing_inode(path.dentry)->i_sb->s_dev,
+-						inotify_mark_user_mask(mark));
++						mask);
+ 				show_mark_fhandle(m, d_backing_inode(path.dentry));
+ 				seq_putc(m, '\n');
+ 				path_put(&path);
 @@ -160,13 +168,6 @@
  		}
  orig_flow:
