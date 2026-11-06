@@ -86,6 +86,113 @@ make -C "$KERNEL_DIR" O="$WORKDIR/out" ARCH="$ARCH" \
   --disable RANDOMIZE_BASE \
   --disable RELOCATABLE
 
+# --- baseline behaviour alignment: ak3_k40s-ksu@Xinran6.21.zip ---
+# Keeps 4.2 + SUSFS + inline hooks untouched; aligns only runtime-visible
+# policy/feature deltas present in this kernel tree. Symbols absent from the
+# tree are silently dropped by olddefconfig, so this is safe across variants.
+"$KERNEL_DIR/scripts/config" --file "$WORKDIR/out/.config" \
+  --enable KSU_TOOLKIT_SUPPORT \
+  --enable MODULE_FORCE_LOAD \
+  --enable SUSPEND_SKIP_SYNC \
+  --enable TCP_CONG_ADVANCED \
+  --enable TCP_CONG_BBR \
+  --enable TCP_CONG_WESTWOOD \
+  --enable NET_SCH_DEFAULT \
+  --enable NET_SCH_FQ_CODEL \
+  --enable DEFAULT_BBR \
+  --enable DEFAULT_FQ_CODEL \
+  --enable HZ_300 \
+  --enable EROFS_FS \
+  --enable EROFS_FS_POSIX_ACL \
+  --enable EROFS_FS_SECURITY \
+  --enable EROFS_FS_XATTR \
+  --enable EROFS_FS_ZIP \
+  --enable WIREGUARD \
+  --enable NTFS_FS \
+  --enable NTFS_RW \
+  --enable DM_CRYPT \
+  --enable DM_USER \
+  --enable ZRAM_WRITEBACK \
+  --enable USB_UAS \
+  --enable USB_F_UVC \
+  --enable USB_CONFIGFS_F_UVC \
+  --enable HIDRAW \
+  --enable HID_PLAYSTATION \
+  --enable SONY_FF \
+  --enable PLAYSTATION_FF \
+  --enable XFRM_MIGRATE \
+  --enable IP_NF_TARGET_TTL \
+  --enable NETFILTER_XT_TARGET_HL \
+  --enable UNICODE \
+  --enable TOUCHSCREEN_NT36XXX \
+  --enable TOUCHSCREEN_COMMON \
+  --enable FINGERPRINT_FPC_TEE \
+  --enable FINGERPRINT_GOODIX \
+  --enable ARM64_LSE_ATOMICS \
+  --enable ARM_DSU_PMU \
+  --enable ARM64_ERRATUM_1742098 \
+  --enable ARM64_ERRATUM_3194386 \
+  --enable MITIGATE_SPECTRE_BRANCH_HISTORY \
+  --enable BOEFFLA_WL_BLOCKER \
+  --enable BUILD_ARM64_DT_OVERLAY \
+  --enable CRYPTO_LZ4 \
+  --enable CRYPTO_SM3 \
+  --enable CRYPTO_SM4 \
+  --enable CRYPTO_CHACHA20_NEON \
+  --enable CRYPTO_CRC32_ARM64_CE \
+  --enable CRYPTO_POLY1305_NEON \
+  --enable CRYPTO_SM3_ARM64_CE \
+  --enable CRYPTO_SM4_ARM64_CE \
+  --enable CRYPTO_LIB_CHACHA \
+  --enable CRYPTO_LIB_POLY1305 \
+  --enable CRYPTO_LIB_CURVE25519 \
+  --enable CRYPTO_LIB_BLAKE2S \
+  --enable CRYPTO_LIB_CHACHA20POLY1305 \
+  --enable EXFAT_FS \
+  --enable F2FS_IOSTAT \
+  --enable FS_HPB \
+  --enable UFSHPB_31 \
+  --enable UFSTW_31 \
+  --disable DYNAMIC_DEBUG \
+  --disable CORESIGHT \
+  --disable DUMP_ALL_STACKS \
+  --disable IPA3_REGDUMP \
+  --disable MHI_DEBUG \
+  --disable MSM_DEBUGCC_KONA \
+  --disable MSM_TZ_LOG \
+  --disable SPMI_MSM_PMIC_ARB_DEBUG \
+  --disable VIDEO_ADV_DEBUG \
+  --disable GPIO_TESTING_MODE \
+  --disable FASTBOOT_CMD_CTRL_UART \
+  --disable TASK_DELAY_ACCT \
+  --disable FORTIFY_SOURCE \
+  --disable SERIAL_MSM_GENI_CONSOLE \
+  --disable NETFILTER_XT_MATCH_CONNBYTES \
+  --disable QCOM_EARLY_RANDOM \
+  --disable QTI_MAXIM_FAN_CONTROLLER \
+  --disable DVB_MPQ \
+  --disable DVB_MPQ_DEMUX \
+  --disable DVB_MPQ_SW \
+  --disable LCD_CLASS_DEVICE \
+  --disable MSM_RDBG \
+  --disable USB_GSPCA \
+  --disable QCOM_LLCC_PERFMON \
+  --disable UNMAP_KERNEL_AT_EL0 \
+  --disable HARDEN_BRANCH_PREDICTOR \
+  --disable CRYPTO_LZO \
+  --disable CRYPTO_CHACHA20 \
+  --disable CRYPTO_CHACHA20POLY1305 \
+  --disable CRYPTO_POLY1305 \
+  --disable HZ_250 \
+  --set-str DEFAULT_TCP_CONG "bbr" \
+  --set-str DEFAULT_NET_SCH "fq_codel" \
+  --set-str STATIC_USERMODEHELPER_PATH "" \
+  --set-str LOCALVERSION "-rc" \
+  --set-str KSU_FULL_NAME_FORMAT "%TAG_NAME%-%COMMIT_SHA%@xinran" \
+  --set-val ION_POOL_FILL_MARK 48 \
+  --set-val SPLIT_PTLOCK_CPUS 999999
+
+
 make -C "$KERNEL_DIR" O="$WORKDIR/out" ARCH="$ARCH" \
   LLVM=1 LLVM_IAS="$LLVM_IAS" REAL_CC="$REAL_CC" PYTHON="$PYTHON_BIN" \
   LD="$KERNEL_LD" LD_COMPAT="$KERNEL_LD_COMPAT" \
