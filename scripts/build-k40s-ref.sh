@@ -95,9 +95,25 @@ bash KernelSU/kernel/setup.sh "$RESUKISU_REF"
 
 case "$REF_VARIANT" in
   strict-susfs)
-    # Upstream SUSFS v2.3.00 for 4.19. F3 fuzz is required: this reference tree
-    # is 4.19.325 (LineageOS 22 mod), not the munch-s-oss tree the patch targets.
-    patch -p1 -F3 --forward < "$NONGKI_DIR/Patches/Patch/susfs_patch_to_4.19.patch"
+    # This tree (android15-lineage22-mod) already ships SUSFS v1.5.7, so the
+    # upstream "new file" v2.3.00 patch cannot be applied directly. Use the
+    # tree-specific differential patch: v1.5.7 hooks are removed and replaced
+    # with v2.3.0, while the CFI/ThinLTO kallsyms change from later merges is
+    # preserved. Verified offline with `git apply --check` against branch HEAD.
+    grep -q 'SUSFS_VERSION "v1.5.7"' include/linux/susfs.h || {
+      echo "FATAL: kernel tree is not the expected v1.5.7 baseline; patch will not apply" >&2
+      exit 1
+    }
+    git apply --verbose "$ROOT_DIR/patches/ref-susfs-v230-strict.patch"
+
+    grep -q 'SUSFS_VERSION "v2.3.0"' include/linux/susfs.h || {
+      echo "FATAL: SUSFS v2.3.0 was not installed" >&2
+      exit 1
+    }
+    ! grep -rq 'INODE_STATE_SUS_PATH' fs/ || {
+      echo "FATAL: stale SUSFS v1.5.7 hooks survived the patch" >&2
+      exit 1
+    }
 
     # 4.19 has no inotify_mark_user_mask(); the v2.3.00 patch calls the 5.x
     # helper. Do a context-free text fix instead of a hunk-based git apply so
@@ -255,7 +271,7 @@ resukisu_ref=$RESUKISU_REF
 resukisu_sha=$(git -C "$KERNEL_DIR/KernelSU" rev-parse HEAD)
 susfs=$SUSFS_LABEL
 susfs_version=$SUSFS_VERSION_LABEL
-susfs_patch=upstream-2.3.00
+susfs_patch=ref-v230-differential
 nongki_ref=$NONGKI_REF
 nongki_sha=$(git -C "$NONGKI_DIR" rev-parse HEAD 2>/dev/null || echo none)
 use_aosp_clang=$USE_AOSP_CLANG
