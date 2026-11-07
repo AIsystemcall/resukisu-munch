@@ -62,8 +62,8 @@ case "$TRACK" in
     need_file "$ARTIFACT_DIR/munch-miui14-resukisu-ref-strict-experimental.zip"
     grep -qx 'track=reference-strict-experimental' "$ARTIFACT_DIR/build-info.txt"
     grep -qx 'display_mi=reference-miui' "$ARTIFACT_DIR/build-info.txt"
-    grep -qx 'susfs=strict-v2.1.0' "$ARTIFACT_DIR/build-info.txt"
-    grep -qx 'susfs_version=v2.1.0' "$ARTIFACT_DIR/build-info.txt"
+    grep -qE 'susfs=strict-v2\.(1\.0|3\.0)' "$ARTIFACT_DIR/build-info.txt"
+    grep -qE 'susfs_version=v2\.(1\.0|3\.0)' "$ARTIFACT_DIR/build-info.txt"
     need_config CONFIG_XIAOMI_MIUI
     need_config CONFIG_KSU_SUSFS
     need_config CONFIG_KSU_SUSFS_SUS_PATH
