@@ -19,6 +19,9 @@ REF_KERNEL_REPO="${REF_KERNEL_REPO:-https://github.com/liyafe1997/kernel_xiaomi_
 REF_KERNEL_REF="${REF_KERNEL_REF:-android15-lineage22-mod}"
 RESUKISU_REPO="${RESUKISU_REPO:-https://github.com/ReSukiSU/ReSukiSU.git}"
 RESUKISU_REF="${RESUKISU_REF:-main}"
+NONGKI_REPO="${NONGKI_REPO:-https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git}"
+NONGKI_REF="${NONGKI_REF:-mainline}"
+NONGKI_DIR="$WORKDIR/non-gki-ref-build"
 ANYKERNEL_REPO="${ANYKERNEL_REPO:-https://github.com/osm0sis/AnyKernel3.git}"
 AOSP_CLANG_REPO="${AOSP_CLANG_REPO:-https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86}"
 AOSP_CLANG_REF="${AOSP_CLANG_REF:-android-msm-redbull-4.19-android12-qpr3}"
@@ -41,10 +44,10 @@ case "$REF_VARIANT" in
     DEFAULT_ZIP_NAME="munch-miui14-resukisu-ref-strict-experimental.zip"
     ARTIFACT_TRACK="ref"
     BUILD_TRACK="reference-strict-experimental"
-    SUSFS_LABEL="strict-v2.1.0"
-    SUSFS_VERSION_LABEL="v2.1.0"
-    KERNEL_STRING="ReSukiSU munch MIUI14 reference strict experimental"
-    PACKAGE_COMMENT="strict experimental reference-kernel package for Redmi K40S / munch MIUI14"
+    SUSFS_LABEL="strict-v2.3.0"
+    SUSFS_VERSION_LABEL="v2.3.0"
+    KERNEL_STRING="ReSukiSU munch MIUI14 reference SUSFS v2.3.0"
+    PACKAGE_COMMENT="reference-kernel package for Redmi K40S / munch MIUI14 with upstream SUSFS v2.3.0"
     ;;
   nosusfs)
     DEFAULT_ARTIFACT_DIR="$WORKDIR/artifacts-ref-nosusfs"
@@ -72,7 +75,7 @@ OUT_DIR="${OUT_DIR:-$DEFAULT_OUT_DIR}"
 ZIP_NAME="${ZIP_NAME:-$DEFAULT_ZIP_NAME}"
 
 mkdir -p "$WORKDIR"
-rm -rf "$KERNEL_DIR" "$ANYKERNEL_DIR" "$ARTIFACT_DIR" "$OUT_DIR"
+rm -rf "$KERNEL_DIR" "$ANYKERNEL_DIR" "$ARTIFACT_DIR" "$OUT_DIR" "$NONGKI_DIR"
 mkdir -p "$ARTIFACT_DIR"
 
 if [[ "$USE_AOSP_CLANG" == "1" ]]; then
@@ -82,16 +85,37 @@ if [[ "$USE_AOSP_CLANG" == "1" ]]; then
 fi
 
 git clone --depth 1 --branch "$REF_KERNEL_REF" "$REF_KERNEL_REPO" "$KERNEL_DIR"
-if [[ "$REF_VARIANT" == "strict-susfs" ]]; then
-  git -C "$KERNEL_DIR" apply "$ROOT_DIR/patches/ref-susfs-v210-strict.patch"
-fi
 git clone --depth 1 --branch "$RESUKISU_REF" "$RESUKISU_REPO" "$KERNEL_DIR/KernelSU"
+if [[ "$REF_VARIANT" == "strict-susfs" ]]; then
+  git clone --depth 1 --branch "$NONGKI_REF" "$NONGKI_REPO" "$NONGKI_DIR"
+fi
 
 pushd "$KERNEL_DIR" >/dev/null
 bash KernelSU/kernel/setup.sh "$RESUKISU_REF"
+
 case "$REF_VARIANT" in
   strict-susfs)
-    git apply "$ROOT_DIR/patches/ref-resukisu-inline-hooks.patch"
+    # Upstream SUSFS v2.3.00 for 4.19. F3 fuzz is required: this reference tree
+    # is 4.19.325 (LineageOS 22 mod), not the munch-s-oss tree the patch targets.
+    patch -p1 -F3 --forward < "$NONGKI_DIR/Patches/Patch/susfs_patch_to_4.19.patch"
+
+    # 4.19 has no inotify_mark_user_mask(); the v2.3.00 patch calls the 5.x
+    # helper. Do a context-free text fix instead of a hunk-based git apply so
+    # it survives line-number drift on this tree.
+    python3 - <<'PY'
+p = 'fs/notify/fdinfo.c'
+s = open(p).read()
+n = s.count('inotify_mark_user_mask(mark)')
+s = s.replace('inotify_mark_user_mask(mark)', 'mask')
+decl = '\t\tu32 mask = mark->mask & IN_ALL_EVENTS;\n'
+if decl not in s:
+    s = s.replace('\tif (inode) {', '\tif (inode) {\n' + decl, 1)
+open(p, 'w').write(s)
+print('fdinfo 4.19 compat: replaced %d helper call(s)' % n)
+PY
+
+    # v2.3.00-specific inline hooks (the script refuses older SUSFS versions).
+    bash "$NONGKI_DIR/Patches/susfs_inline_hook_patches.sh"
     ;;
   nosusfs)
     git apply "$ROOT_DIR/patches/ref-resukisu-manual-hooks.patch"
@@ -231,6 +255,9 @@ resukisu_ref=$RESUKISU_REF
 resukisu_sha=$(git -C "$KERNEL_DIR/KernelSU" rev-parse HEAD)
 susfs=$SUSFS_LABEL
 susfs_version=$SUSFS_VERSION_LABEL
+susfs_patch=upstream-2.3.00
+nongki_ref=$NONGKI_REF
+nongki_sha=$(git -C "$NONGKI_DIR" rev-parse HEAD 2>/dev/null || echo none)
 use_aosp_clang=$USE_AOSP_CLANG
 aosp_clang_ref=$AOSP_CLANG_REF
 aosp_clang_version=$AOSP_CLANG_VERSION
