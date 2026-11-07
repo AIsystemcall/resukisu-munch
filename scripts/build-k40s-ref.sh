@@ -115,6 +115,22 @@ case "$REF_VARIANT" in
       exit 1
     }
 
+    # Upstream v2.3.00 adds extern declarations to fs/stat.c but forgets to
+    # include susfs_def.h. STATX_SUS_KSTAT / STATX_SUS_KSTAT_FUSE and
+    # susfs_is_current_app_uid() live there; the 157 tree got them indirectly,
+    # this tree does not (CI #2 failed with 11 undeclared-identifier errors).
+    python3 - <<'PY'
+p = 'fs/stat.c'
+s = open(p).read()
+needle = '#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\nextern bool susfs_is_inode_sus_kstat'
+if '#include <linux/susfs_def.h>' not in s:
+    assert needle in s, 'fs/stat.c SUS_KSTAT block not found'
+    s = s.replace(needle,
+                  '#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\nextern bool susfs_is_inode_sus_kstat', 1)
+    open(p, 'w').write(s)
+    print('fs/stat.c: added linux/susfs_def.h include')
+PY
+
     # 4.19 has no inotify_mark_user_mask(); the v2.3.00 patch calls the 5.x
     # helper. Do a context-free text fix instead of a hunk-based git apply so
     # it survives line-number drift on this tree.
