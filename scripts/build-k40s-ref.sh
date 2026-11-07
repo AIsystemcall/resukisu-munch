@@ -86,9 +86,9 @@ fi
 
 git clone --depth 1 --branch "$REF_KERNEL_REF" "$REF_KERNEL_REPO" "$KERNEL_DIR"
 git clone --depth 1 --branch "$RESUKISU_REF" "$RESUKISU_REPO" "$KERNEL_DIR/KernelSU"
-if [[ "$REF_VARIANT" == "strict-susfs" ]]; then
-  git clone --depth 1 --branch "$NONGKI_REF" "$NONGKI_REPO" "$NONGKI_DIR"
-fi
+# No NonGKI clone: this tree ships legacy KernelSU-Next hooks, so the
+# NonGKI inline-hook script skips every file (it assumes "already patched").
+# The tree-specific ref-resukisu-inline-hooks.patch below is the correct port.
 
 pushd "$KERNEL_DIR" >/dev/null
 bash KernelSU/kernel/setup.sh "$RESUKISU_REF"
@@ -146,8 +146,37 @@ open(p, 'w').write(s)
 print('fdinfo 4.19 compat: replaced %d helper call(s)' % n)
 PY
 
-    # v2.3.00-specific inline hooks (the script refuses older SUSFS versions).
-    bash "$NONGKI_DIR/Patches/susfs_inline_hook_patches.sh"
+    # ReSukiSU 4.2 dropped the legacy KernelSU-Next bool switches
+    # (ksu_vfs_read_hook / ksu_execveat_hook / ksu_input_hook) and its
+    # kernel/tools/inline_hook_check.mk aborts the build with
+    # "You should integrate ReSukiSU in your kernel correctly." if they survive
+    # (CI #3, 9m05s). The 325 tree still carries them because the NonGKI
+    # inline-hook script saw the old ksu_handle_* calls and skipped every file.
+    # Apply the tree-specific ReSukiSU 4.2 hook port from the reference track:
+    # it converts the hooks to CONFIG_KSU_SUSFS direct calls and adds the
+    # setresuid / reboot hooks required by the inline hook checker.
+    git apply "$ROOT_DIR/patches/ref-resukisu-inline-hooks.patch"
+
+    ! grep -qw 'ksu_vfs_read_hook' fs/read_write.c || {
+      echo "FATAL: legacy ksu_vfs_read_hook survived the hook port" >&2
+      exit 1
+    }
+    ! grep -qw 'ksu_execveat_hook' fs/exec.c || {
+      echo "FATAL: legacy ksu_execveat_hook survived the hook port" >&2
+      exit 1
+    }
+    ! grep -qw 'ksu_input_hook' drivers/input/input.c || {
+      echo "FATAL: legacy ksu_input_hook survived the hook port" >&2
+      exit 1
+    }
+    grep -qw 'ksu_handle_sys_reboot' kernel/reboot.c || {
+      echo "FATAL: ksu_handle_sys_reboot hook missing" >&2
+      exit 1
+    }
+    grep -qw 'ksu_handle_setresuid' kernel/sys.c || {
+      echo "FATAL: ksu_handle_setresuid hook missing" >&2
+      exit 1
+    }
     ;;
   nosusfs)
     git apply "$ROOT_DIR/patches/ref-resukisu-manual-hooks.patch"
@@ -288,8 +317,8 @@ resukisu_sha=$(git -C "$KERNEL_DIR/KernelSU" rev-parse HEAD)
 susfs=$SUSFS_LABEL
 susfs_version=$SUSFS_VERSION_LABEL
 susfs_patch=ref-v230-differential
-nongki_ref=$NONGKI_REF
-nongki_sha=$(git -C "$NONGKI_DIR" rev-parse HEAD 2>/dev/null || echo none)
+hook_patch=ref-resukisu-inline-hooks
+hook_mode=inline-susfs
 use_aosp_clang=$USE_AOSP_CLANG
 aosp_clang_ref=$AOSP_CLANG_REF
 aosp_clang_version=$AOSP_CLANG_VERSION
