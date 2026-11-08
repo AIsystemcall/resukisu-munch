@@ -17,8 +17,12 @@ CLANG_PREBUILT_DIR="$WORKDIR/aosp-clang-ref"
 REF_VARIANT="${REF_VARIANT:-strict-susfs}"
 REF_KERNEL_REPO="${REF_KERNEL_REPO:-https://github.com/liyafe1997/kernel_xiaomi_sm8250_mod.git}"
 REF_KERNEL_REF="${REF_KERNEL_REF:-android15-lineage22-mod}"
-RESUKISU_REPO="${RESUKISU_REPO:-https://github.com/ReSukiSU/ReSukiSU.git}"
+RESUKISU_REPO="${RESUKISU_REPO:-https://github.com/Baka-SU/BakaSU.git}"
 RESUKISU_REF="${RESUKISU_REF:-main}"
+# Version lock: installed manager is CI 35257, built from BakaSU main
+# 516d3e87fbc986ccefdde2c2765f1700612441a9. Refuse to build if upstream main moved, otherwise the
+# driver/manager pair would silently mismatch (feature switches lost).
+RESUKISU_PIN="${RESUKISU_PIN:-516d3e87fbc986ccefdde2c2765f1700612441a9}"
 NONGKI_REPO="${NONGKI_REPO:-https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git}"
 NONGKI_REF="${NONGKI_REF:-mainline}"
 NONGKI_DIR="$WORKDIR/non-gki-ref-build"
@@ -86,6 +90,16 @@ fi
 
 git clone --depth 1 --branch "$REF_KERNEL_REF" "$REF_KERNEL_REPO" "$KERNEL_DIR"
 git clone --depth 1 --branch "$RESUKISU_REF" "$RESUKISU_REPO" "$KERNEL_DIR/KernelSU"
+if [[ -n "$RESUKISU_PIN" ]]; then
+  ksu_head="$(git -C "$KERNEL_DIR/KernelSU" rev-parse HEAD)"
+  if [[ "$ksu_head" != "$RESUKISU_PIN" ]]; then
+    echo "FATAL: BakaSU main advanced to $ksu_head, but the installed manager is CI 35257" >&2
+    echo "       (pinned $RESUKISU_PIN). Refusing to build a mismatched kernel." >&2
+    echo "       Upgrade the manager to the matching CI build, then update RESUKISU_PIN." >&2
+    exit 1
+  fi
+  echo "KSU version lock OK: $ksu_head (manager 35257)"
+fi
 # No NonGKI clone: this tree ships legacy KernelSU-Next hooks, so the
 # NonGKI inline-hook script skips every file (it assumes "already patched").
 # The tree-specific ref-resukisu-inline-hooks.patch below is the correct port.
@@ -404,16 +418,15 @@ PYPORT
     ;;
 esac
 
-# --- fix: Abnormal Environment(k) on non-GKI (selinux_hide fake status sequence) ---
-# ReSukiSU 在 init second_stage 里先快照 fake status 页、后加载 KSU 策略，
-# 导致伪造页 sequence 恒为 0；而系统正在 enforcing 运行，策略不可能从未加载，
-# 于是被判定 "sequence/policyload unexpected" -> Abnormal Environment(k)。
-# 在编译前做两处修正（幂等，上游若已修复会自动跳过）：
-#   1) 换序：apply_kernelsu_rules() 之后再 handle_second_stage()；
-#   2) 兜底：initialize_fake_status() 中 sequence 为 0 时钳制为 1。
+# --- fix: SELinux status view coherence on non-GKI (v3 dynamic sync) ---
+# App 侧 fake_status 页是启动时的静态快照，sequence 与真实页不一致
+# (root 读到 6、App 读到 0 或钳制成的 1)，命中 "sequence/policyload unexpected"。
+# v3 保持上游调用顺序不动：记住真实 status 页指针，每次 App 打开 status 节点时
+# 把 sequence/policyload/enforcing/deny_unknown 同步过去，使两个视角一致。
+# 不改 live policy、不改真实 status 页、不改任何功能状态（幂等，严格自检）。
 FIXPY="$ROOT_DIR/scripts/fix_selinux_hide_status.py"
 if [[ ! -f "$FIXPY" ]]; then
-  echo "FATAL: $FIXPY not found (selinux_hide sequence fix)" >&2
+  echo "FATAL: $FIXPY not found (selinux_hide status view sync)" >&2
   exit 1
 fi
 "$PYTHON_BIN" "$FIXPY" "$KERNEL_DIR/KernelSU"

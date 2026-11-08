@@ -1,116 +1,148 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-修复 ReSukiSU / BakaSU 在 Android 4.19 等 non-GKI 内核上
-`Abnormal Environment(k)` 恒报错的根因。
+v3 修复：让 selinux_hide 的伪造 status 页「动态同步真实页」，而不是靠静态快照/钳制。
 
-根因
-----
-kernel/runtime/ksud_integration.c 中 init second_stage 分支的顺序是
+背景（实测）：
+  root/shell 读 /sys/fs/selinux/status = (version, sequence, enforcing, policyload,
+  deny_unknown) = 1 6 1 0 1；App(uid>=10000) 通过 fake_status 页读到 1 0 1 0 1（v1 快照）
+  或 1 1 1 0 1（v2 钳制）。两者都与真实不一致，命中
+  「sequence/policyload unexpected」->「检测SELinux Policy时发现可疑问题」。
 
-    ksu_selinux_hide_handle_second_stage();   // 内部立刻 initialize_fake_status()
-    apply_kernelsu_rules();                   // 之后才加载 KSU 策略
+v1 = 换序（已证伪：会让 initialize_fake_status 拿不到 status page）
+v2 = 保持原顺序 + 把 sequence 钳成 1（仍不自洽，且用户未认可该方向）
+v3 = 保持上游原顺序不动，只做两件事：
+   1) initialize_fake_status() 记住真实 status 页指针；
+   2) 每次 App 打开 status 节点时，把 sequence/policyload/enforcing/deny_unknown
+      从真实页同步到伪造页。这样 App 与 root 视角完全一致、视图内部自洽。
 
-快照抢在策略加载之前，伪造 status 页的 sequence 被固定为 0，而真实值是 1..N。
-检测器读 /sys/fs/selinux/status 看到 sequence=0，判定「策略从未加载过」，
-归入 sequence/policyload unexpected -> Abnormal Environment(k)。
+真实 live policy / 真实 status 页 / 系统功能一律不改动；只改「检测方看到的视图」。
 
-为什么不能靠换序解决
---------------------
-把 handle_second_stage() 挪到 apply_kernelsu_rules() 之后（2026-11-08 实测）
-会导致 initialize_fake_status() 里 selinux_state.ss->status_page 已被策略加载
-重建为空，直接 "status_page not exist" 跳过 -> fake_status 根本不存在 ->
-app 读到真实 sequence（Abnormal(k) 消失），但 ksu 域等全部暴露（异常 1 项变 9 项）。
-因此 **必须保持原调用顺序**，只在快照内容上修正 sequence。
-
-修复
-----
-在 initialize_fake_status() 的 memcpy 之后：若 sequence 为 0（说明快照发生在
-首次策略加载之前），钳制为 1，模拟原生 Android 开机「至少加载过一次策略」的状态。
-
-用法：python3 fix_selinux_hide_status.py <KernelSU 源码根目录>
+用法： python3 fix_selinux_hide_status_v3.py <KSU源码根目录>
+退出码：0 成功（或已修复）；2 关键锚点缺失 -> 让 CI 失败，绝不静默产出未修复内核。
 """
 import os
-import re
 import sys
 
-KSUD = os.path.join("kernel", "runtime", "ksud_integration.c")
-HIDE = os.path.join("kernel", "feature", "selinux_hide.c")
+MARK = "KSU-MUNCH-FIX-V3"
 
-# 错误顺序形态：apply_kernelsu_rules 在前、handle_second_stage 在后
-PAT_WRONG_ORDER = re.compile(
-    r"^(?P<i2>[ \t]*)apply_kernelsu_rules\(\);[ \t]*\n"
-    r"(?P<blank>(?:[ \t]*\n)?)"
-    r"^(?P<i1>[ \t]*)ksu_selinux_hide_handle_second_stage\(\);[ \t]*$",
-    re.M,
+DECL = (
+    "/* " + MARK + ": remember the real status page so the fake view stays coherent */\n"
+    "static struct selinux_kernel_status *ksu_real_status_ptr;\n"
+)
+
+ASSIGN = (
+    "    /* " + MARK + ": keep a handle on the real page for later sync */\n"
+    "    ksu_real_status_ptr = status;\n"
+)
+
+SYNC_BLOCK = (
+    "        if (data) {\n"
+    "            /* " + MARK + ": a stale snapshot (sequence=0 or clamped to 1 while\n"
+    "             * the real page is 6/0) is exactly what sequence/policyload\n"
+    "             * consistency checks flag. Mirror the dynamic fields on every\n"
+    "             * open so App and root see the same status. */\n"
+    "            if (ksu_real_status_ptr) {\n"
+    "                struct selinux_kernel_status *fake = (struct selinux_kernel_status *)data;\n"
+    "                fake->sequence     = READ_ONCE(ksu_real_status_ptr->sequence);\n"
+    "                fake->policyload   = READ_ONCE(ksu_real_status_ptr->policyload);\n"
+    "                fake->enforcing    = READ_ONCE(ksu_real_status_ptr->enforcing);\n"
+    "                fake->deny_unknown = READ_ONCE(ksu_real_status_ptr->deny_unknown);\n"
+    "            }\n"
+    "            filp->private_data = data;\n"
+    "            return 0;\n"
+    "        }\n"
+)
+
+OLD_OPEN = (
+    "        if (data) {\n"
+    "            filp->private_data = data;\n"
+    "            return 0;\n"
+    "        }\n"
+)
+
+CLAMP_BLOCK = (
+    "    /* 原生 Android boot 至少加载过一次策略，sequence 不可能为 0；\n"
+    "       钳制为 1，避免被判定 sequence/policyload unexpected*/\n"
+    "    if (!ksu_late_loaded && new_status->sequence == 0)\n"
+    "        new_status->sequence = 1;\n"
 )
 
 
-def revert_bad_order(path):
-    """若源码被错误地换过序，还原为上游原始顺序。返回还原处数。"""
-    src = open(path, encoding="utf-8").read()
-
-    def repl(m):
-        return (
-            "%sksu_selinux_hide_handle_second_stage();\n"
-            "%s"
-            "%sapply_kernelsu_rules();"
-            % (m.group("i1"), m.group("blank"), m.group("i2"))
-        )
-
-    out, n = PAT_WRONG_ORDER.subn(repl, src)
-    if n:
-        open(path, "w", encoding="utf-8", newline="").write(out)
-    return n
-
-
-def patch_hide(path):
-    """memcpy 之后钳制 sequence。返回 (是否新插入, 是否已存在)。"""
-    src = open(path, encoding="utf-8").read()
-
-    anchor = "    memcpy(new_status, status, sizeof(*status));\n"
-    if anchor not in src:
-        return 0, 0
-    if "new_status->sequence = 1;" in src:
-        return 0, 1  # 已修过
-
-    inject = (
-        "    /* 原生 Android boot 至少加载过一次策略，sequence 不可能为 0；\n"
-        "       本快照发生在 apply_kernelsu_rules() 之前，所以捕获到的是 0。\n"
-        "       钳制为 1，避免被判定 sequence/policyload unexpected\n"
-        "       -> Abnormal Environment(k) */\n"
-        "    if (!ksu_late_loaded && new_status->sequence == 0)\n"
-        "        new_status->sequence = 1;\n"
-    )
-    out = src.replace(anchor, anchor + inject, 1)
-    open(path, "w", encoding="utf-8", newline="").write(out)
-    return 1, 0
-
-
-def main():
-    root = sys.argv[1] if len(sys.argv) > 1 else "."
-    ksud = os.path.join(root, KSUD)
-    hide = os.path.join(root, HIDE)
-
-    if not os.path.isfile(hide):
-        sys.stderr.write("FATAL: 找不到 %s\n" % hide)
-        return 1
-
-    n_revert = revert_bad_order(ksud) if os.path.isfile(ksud) else 0
-    h_new, h_exist = patch_hide(hide)
-
-    print("ksud_integration.c: reverted_bad_order=%d" % n_revert)
-    print("selinux_hide.c    : inserted=%d, already_fixed=%d" % (h_new, h_exist))
-
-    if h_new == 0 and h_exist == 0:
-        sys.stderr.write(
-            "FATAL: 未能在 initialize_fake_status() 定位 memcpy 锚点，"
-            "源码结构已变化（不要使用未修复的内核）\n"
-        )
+def main(root):
+    path = os.path.join(root, "kernel", "feature", "selinux_hide.c")
+    if not os.path.isfile(path):
+        print("FATAL: %s not found" % path)
         return 2
-    print("NOTE: 调用顺序保持上游原样，仅修正 sequence。")
+    with open(path, encoding="utf-8") as f:
+        src = f.read()
+
+    if MARK in src:
+        print("selinux_hide.c: already patched (v3), skip")
+        return 0
+
+    # 1) 移除 v2 的静态钳制块（如果存在）；v3 由每次 open 同步取代它。
+    n_clamp = 0
+    if CLAMP_BLOCK in src:
+        src = src.replace(CLAMP_BLOCK, "", 1)
+        n_clamp = 1
+    else:
+        # 兼容只有核心两行、注释略有不同的写法
+        import re
+        pat = re.compile(
+            r"[ \t]*if \(!ksu_late_loaded && new_status->sequence == 0\)\n"
+            r"[ \t]*new_status->sequence = 1;\n"
+        )
+        src, n_clamp = pat.subn("", src, count=1)
+
+    # 2) 全局声明：插在 fake_status 声明之后
+    decl_anchor = "__maybe_static struct page *fake_status = NULL;"
+    if decl_anchor not in src:
+        print("FATAL: fake_status declaration anchor missing")
+        return 2
+    src = src.replace(decl_anchor, decl_anchor + "\n" + DECL.rstrip("\n"), 1)
+    n_decl = 1
+
+    # 3) initialize_fake_status() 里记住真实页
+    assign_anchor = "    struct selinux_kernel_status *status = page_address(selinux_status_page);"
+    if assign_anchor not in src:
+        print("FATAL: initialize_fake_status real-page anchor missing")
+        return 2
+    src = src.replace(assign_anchor, assign_anchor + "\n" + ASSIGN.rstrip("\n"), 1)
+    n_assign = 1
+
+    # 4) open 时同步动态字段
+    if OLD_OPEN not in src:
+        print("FATAL: my_sel_open_handle_status 'if (data)' block missing")
+        return 2
+    src = src.replace(OLD_OPEN, SYNC_BLOCK.rstrip("\n"), 1)
+    n_sync = 1
+
+    # 严格自检
+    required = [
+        "ksu_real_status_ptr;",
+        "ksu_real_status_ptr = status;",
+        "fake->sequence     = READ_ONCE",
+        "fake->policyload   = READ_ONCE",
+    ]
+    missing = [x for x in required if x not in src]
+    if missing:
+        print("FATAL: post-patch verification failed, missing: %s" % missing)
+        return 2
+    if n_decl != 1 or n_assign != 1 or n_sync != 1:
+        print("FATAL: unexpected patch counts")
+        return 2
+
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(src)
+
+    print("selinux_hide.c: v3 sync=1 decl=1 assign=1 removed_v2_clamp=%d" % n_clamp)
+    print("NOTE: upstream call order untouched; live policy and real status page untouched.")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    if len(sys.argv) != 2:
+        print("usage: %s <KSU source root>" % sys.argv[0])
+        sys.exit(2)
+    sys.exit(main(sys.argv[1]))
