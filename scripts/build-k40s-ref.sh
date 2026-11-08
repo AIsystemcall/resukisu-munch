@@ -402,10 +402,21 @@ PYPORT
       exit 1
     }
     ;;
-  nosusfs)
-    git apply "$ROOT_DIR/patches/ref-resukisu-manual-hooks.patch"
-    ;;
 esac
+
+# --- fix: Abnormal Environment(k) on non-GKI (selinux_hide fake status sequence) ---
+# ReSukiSU 在 init second_stage 里先快照 fake status 页、后加载 KSU 策略，
+# 导致伪造页 sequence 恒为 0；而系统正在 enforcing 运行，策略不可能从未加载，
+# 于是被判定 "sequence/policyload unexpected" -> Abnormal Environment(k)。
+# 在编译前做两处修正（幂等，上游若已修复会自动跳过）：
+#   1) 换序：apply_kernelsu_rules() 之后再 handle_second_stage()；
+#   2) 兜底：initialize_fake_status() 中 sequence 为 0 时钳制为 1。
+FIXPY="$ROOT_DIR/scripts/fix_selinux_hide_status.py"
+if [[ ! -f "$FIXPY" ]]; then
+  echo "FATAL: $FIXPY not found (selinux_hide sequence fix)" >&2
+  exit 1
+fi
+"$PYTHON_BIN" "$FIXPY" "$KERNEL_DIR/KernelSU"
 
 MAKE_ARGS=(
   ARCH="$ARCH"
