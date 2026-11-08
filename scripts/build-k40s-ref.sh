@@ -418,11 +418,13 @@ PYPORT
     ;;
 esac
 
-# --- fix: SELinux status view coherence on non-GKI (v3 dynamic sync) ---
+# --- fix: SELinux status view coherence on non-GKI (v4, panic fix) ---
 # App 侧 fake_status 页是启动时的静态快照，sequence 与真实页不一致
 # (root 读到 6、App 读到 0 或钳制成的 1)，命中 "sequence/policyload unexpected"。
-# v3 保持上游调用顺序不动：记住真实 status 页指针，每次 App 打开 status 节点时
+# 保持上游调用顺序不动：记住真实 status 页指针，每次 App 打开 status 节点时
 # 把 sequence/policyload/enforcing/deny_unknown 同步过去，使两个视角一致。
+# v4 修正 v3 的 kernel panic：fake_status 是 struct page *（页描述符），
+# 必须先 page_address() 再写字段；v3 直接强转写坏了 struct page 头部。
 # 不改 live policy、不改真实 status 页、不改任何功能状态（幂等，严格自检）。
 FIXPY="$ROOT_DIR/scripts/fix_selinux_hide_status.py"
 if [[ ! -f "$FIXPY" ]]; then
