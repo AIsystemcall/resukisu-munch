@@ -1,60 +1,57 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-v4：修 v3 的空指针 panic，仍保持「动态同步 status 视图」方向不变。
+v5：让 App 侧 fake status 页呈现「原厂开机结束时的自洽值」。
 
-v3 崩溃根因（pstore 实测）：
-  fake_status 的声明是 `struct page *`（不是虚拟地址）：
-      void *data;
-      data = fake_status;            // data 实际是 struct page *
-      filp->private_data = data;    // 原生 sel_read_status 会 page_address(private_data)
-  v3 把 data 直接强转成 struct selinux_kernel_status * 并写 4 个 u32，
-  等于覆写了 struct page 头部（flags / lru / mapping），随后
-  simple_read_from_buffer -> __check_object_size 访问被破坏的 page，
-  触发 "NULL pointer dereference at virtual address 0x8" 并 kernel_panic。
+实测证据（三次构建都命中同一项「status.sequence/policyload」）：
+  v1 快照      App 读到 1 0 1 0 1   -> 报
+  v2 钳制      App 读到 1 1 1 0 1   -> 报
+  v4 同步真实  App 读到 1 6 1 0 1   -> 报（与 root 完全一致仍报）
+  共同破绽：policyload == 0。
 
-v4 修正：先 page_address((struct page *)data) 再写字段；同时兼容
-  - 原始上游源码（全新插入）
-  - 已打过 v3 错误补丁的源码（就地改正）
-幂等；锚点缺失 exit 2 让 CI 失败，绝不静默产出未修复内核。
+上游 initialize_fake_status() 的注释与取值：
+  // Serve what a stock boot ends with instead: creation sentinel below
+  // 6.10, one load plus one setenforce above.
+  #if >= 6.10 : sequence=4, policyload=1
+  #else       : sequence=0, policyload=0   (creation sentinel)
+本机 CONFIG_KSU=y（Built-in），ksu_late_loaded=false，不走该分支，
+拿到的是真实页 6/0 —— 既非 stock 值，policyload 也不为 1。
 
-用法：python3 fix_selinux_hide_status.py <KSU源码根目录>
+v5 修正：在 v4 的 page_address() 基础上，把 sequence/policyload 固定为
+上游给 6.10+ 的 stock 值 4/1；enforcing/deny_unknown 仍与真实页同步。
+不改 live policy、不改真实 status 页、不改任何功能状态。
+
+兼容：原始上游源码（全新插入）、已打 v4 的源码（就地升级）、已打 v3 的源码。
+幂等；锚点缺失 exit 2 让 CI 失败。
 """
 import os
 import sys
 
-MARK = "KSU-MUNCH-FIX-V3"          # 标记沿用，便于就地升级 v3 -> v4
-V4_TAG = "KSU-MUNCH-FIX-V4"
+MARK = "KSU-MUNCH-FIX-V5"
 
 DECL = (
-    "/* " + MARK + ": remember the real status page so the fake view stays coherent */\n"
+    "/* " + MARK + ": remember the real status page for enforcing/deny_unknown sync */\n"
     "static struct selinux_kernel_status *ksu_real_status_ptr;\n"
 )
 
 ASSIGN = (
-    "    /* " + MARK + ": keep a handle on the real page for later sync */\n"
+    "    /* " + MARK + ": keep a handle on the real page */\n"
     "    ksu_real_status_ptr = status;\n"
-)
-
-BAD_CAST = "                struct selinux_kernel_status *fake = (struct selinux_kernel_status *)data;\n"
-GOOD_CAST = (
-    "                /* " + V4_TAG + ": data is a struct page *, NOT a virtual address.\n"
-    "                 * v3 cast it directly and corrupted struct page -> kernel panic.\n"
-    "                 * arm64 lowmem page_address() is always valid, no NULL check needed. */\n"
-    "                struct selinux_kernel_status *fake =\n"
-    "                    (struct selinux_kernel_status *)page_address((struct page *)data);\n"
 )
 
 SYNC_BLOCK = (
     "        if (data) {\n"
-    "            /* " + MARK + ": a stale snapshot (sequence=0 or clamped to 1 while\n"
-    "             * the real page is 6/0) is exactly what sequence/policyload\n"
-    "             * consistency checks flag. Mirror the dynamic fields on every\n"
-    "             * open so App and root see the same status. */\n"
+    "            /* " + MARK + ": serve the stock-boot status tuple instead of a\n"
+    "             * stale snapshot (0/0) or the KSU-polluted real page (6/0).\n"
+    "             * Upstream uses sequence=4 / policyload=1 for >=6.10; 4.19\n"
+    "             * built-in never enters that branch, hence the detector flags\n"
+    "             * sequence/policyload unexpected on non-GKI kernels. */\n"
     "            if (ksu_real_status_ptr) {\n"
-    + GOOD_CAST +
-    "                fake->sequence     = READ_ONCE(ksu_real_status_ptr->sequence);\n"
-    "                fake->policyload   = READ_ONCE(ksu_real_status_ptr->policyload);\n"
+    "                /* fake_status is struct page *, NOT a virtual address. */\n"
+    "                struct selinux_kernel_status *fake =\n"
+    "                    (struct selinux_kernel_status *)page_address((struct page *)data);\n"
+    "                fake->sequence   = 4;\n"
+    "                fake->policyload = 1;\n"
     "                fake->enforcing    = READ_ONCE(ksu_real_status_ptr->enforcing);\n"
     "                fake->deny_unknown = READ_ONCE(ksu_real_status_ptr->deny_unknown);\n"
     "            }\n"
@@ -77,6 +74,14 @@ CLAMP_BLOCK = (
     "        new_status->sequence = 1;\n"
 )
 
+V4_SEQ = "                fake->sequence     = READ_ONCE(ksu_real_status_ptr->sequence);\n"
+V4_LOAD = "                fake->policyload   = READ_ONCE(ksu_real_status_ptr->policyload);\n"
+BAD_CAST = "                struct selinux_kernel_status *fake = (struct selinux_kernel_status *)data;\n"
+V4_CAST = (
+    "                struct selinux_kernel_status *fake =\n"
+    "                    (struct selinux_kernel_status *)page_address((struct page *)data);\n"
+)
+
 
 def main(root):
     path = os.path.join(root, "kernel", "feature", "selinux_hide.c")
@@ -86,21 +91,27 @@ def main(root):
     with open(path, encoding="utf-8") as f:
         src = f.read()
 
-    # 情况 A：已打过 v3（错误强转）-> 就地升级为 v4
-    if BAD_CAST in src:
-        src = src.replace(BAD_CAST, GOOD_CAST, 1)
+    # 情况 A：已打过 v4（或 v3 修过强转）-> 就地升级两行赋值
+    if V4_SEQ in src or V4_LOAD in src:
+        if V4_SEQ in src:
+            src = src.replace(V4_SEQ, "                fake->sequence   = 4;\n", 1)
+        if V4_LOAD in src:
+            src = src.replace(V4_LOAD, "                fake->policyload = 1;\n", 1)
+        if BAD_CAST in src:
+            src = src.replace(BAD_CAST, V4_CAST, 1)
+        src = src.replace("KSU-MUNCH-FIX-V4", MARK).replace("KSU-MUNCH-FIX-V3", MARK)
         with open(path, "w", encoding="utf-8", newline="") as f:
             f.write(src)
-        print("selinux_hide.c: v3->v4 upgraded (page_address fix applied)")
-        return 0 if V4_TAG in src and BAD_CAST not in src else 2
+        print("selinux_hide.c: v4->v5 upgraded (stock 4/1)")
+        return 0 if "fake->policyload = 1;" in src else 2
 
-    if V4_TAG in src and MARK in src:
-        print("selinux_hide.c: already v4, skip")
+    if MARK in src:
+        print("selinux_hide.c: already v5, skip")
         return 0
 
-    # 情况 B：原始上游源码 -> 全新插入 v4
-    if MARK in src:
-        print("FATAL: v3 marker present but bad cast not found; source layout unexpected")
+    # 情况 B：原始上游源码
+    if "KSU-MUNCH-FIX-V" in src:
+        print("FATAL: unknown earlier fix marker present")
         return 2
 
     if CLAMP_BLOCK in src:
@@ -135,8 +146,8 @@ def main(root):
         "ksu_real_status_ptr;",
         "ksu_real_status_ptr = status;",
         "page_address((struct page *)data)",
-        "fake->sequence     = READ_ONCE",
-        "fake->policyload   = READ_ONCE",
+        "fake->sequence   = 4;",
+        "fake->policyload = 1;",
     ]
     missing = [x for x in required if x not in src]
     if missing:
@@ -148,8 +159,8 @@ def main(root):
 
     with open(path, "w", encoding="utf-8", newline="") as f:
         f.write(src)
-    print("selinux_hide.c: v4 sync=1 decl=1 assign=1 removed_v2_clamp=%d" % n_clamp)
-    print("NOTE: data is struct page *; page_address() applied. Live policy untouched.")
+    print("selinux_hide.c: v5 stock 4/1 sync=1 decl=1 assign=1 removed_v2_clamp=%d" % n_clamp)
+    print("NOTE: page_address() applied; live policy and real status page untouched.")
     return 0
 
 
