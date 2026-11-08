@@ -418,13 +418,13 @@ PYPORT
     ;;
 esac
 
-# --- fix: SELinux status view coherence on non-GKI (v5, stock 4/1) ---
-# App 侧 fake_status 页是启动时的静态快照；三次构建分别给 App 呈现
-# 0/0、1/0、6/0，均命中 "sequence/policyload unexpected"。
-# 共同破绽是 policyload=0：上游只给 >=6.10 准备了 stock 值 4/1，
-# 4.19 built-in 模式 (ksu_late_loaded=false) 不走该分支。
-# v5 在 v4 的 page_address() 基础上把 App 视图固定为 stock 4/1，
-# enforcing/deny_unknown 仍与真实页同步。
+# --- fix: SELinux access/status read-back coherence (v6, shared seqno) ---
+# 受控实验证明「检测SELinux Policy」与 fake status 页无关（关掉 hide 仍在）。
+# 官方判据落在 access/status 读数一致性：上游 my_write_access() 把
+# avd.seqno 硬编码成 1，而 App 侧 status.sequence 是 4，两者不自洽。
+# v6 让二者共用 ksu_fake_status_seq=4（原生内核里二者同源于
+# avc_cache.latest_notif，本应相等）。保留 v4 的 page_address() panic 修复、
+# v5 的 policyload=1。
 # 不改 live policy、不改真实 status 页、不改任何功能状态（幂等，严格自检）。
 FIXPY="$ROOT_DIR/scripts/fix_selinux_hide_status.py"
 if [[ ! -f "$FIXPY" ]]; then
