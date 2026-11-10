@@ -440,25 +440,29 @@ PYPORT
     ;;
 esac
 
-# --- fix: v6 baseline + ONE v7 addition (App access-oracle fallback) ---
-# v6（沿用的基线，本次不改）：status.sequence 与 access avd.seqno 共用
-# ksu_fake_status_seq=4；保留 v4 的 page_address() panic 修复、v5 的
-# policyload=1；不改 live policy、不改真实 status 页、不改任何功能状态。
-#
-# v7（本次唯一一处内核侧补齐）：my_write_access() 的失败分支原本全部
-# `goto out` 并直接返回负 errno / 0，buf 完全未填充 -> 检测方的哨兵
-# context 三组对照、加扰动、重复性检查拿不到结构一致的可比较回包，
-# 且事务未正确结束导致后续写 EBUSY。v7 在 out: 之前增加一条
-# denied-but-well-formed 的兜底回包（seqno 仍与 App status 视图同源）。
-# 只按 App uid 过滤，root/system 走原路径；不泄露 live policy 规则。
-# 边界：不换栈、不动任何 KSU/LSP 模块、不新增模块、不改调用关系。
-# 幂等，严格自检；相对 v6 的源码 diff 只有一个代码块。
+# --- fix: v8 stage-2 (TWO kernel-side points, both view-only) ---
+# 1) selinux_hide.c: 撤销 v7 的兜底块（它把「无效上下文应返回 EINVAL」改成了
+#    allow/deny 元组，反而新增 invalid-context access decision），并让
+#    status / access 的 seqno 从真实 status 页动态读取且同步刷新 fake 页，
+#    而不是冻结在常量上（4.6.2 判据「seqno 不前进 / 回填不一致」）。
+#    干净 policydb 视图上游已用 backup_sepolicy/backup_policydb 实现，不动。
+# 2) fs/proc/version.c: /proc/version 对 App uid 输出与 uname 伪装一致的
+#    release/build-time，root/system 保持真实，修复「三路 release 不一致」。
+# 边界：不换栈、不动 root 实现、不动 LSPosed 框架与其 Xposed 模块、
+#       不改 live policy / 真实 status 页 / 真实 utsname、版本锁不变。
 FIXPY="$ROOT_DIR/scripts/fix_selinux_hide_status.py"
 if [[ ! -f "$FIXPY" ]]; then
-  echo "FATAL: $FIXPY not found (selinux_hide status view sync)" >&2
+  echo "FATAL: $FIXPY not found (selinux_hide v8 dynamic seqno)" >&2
   exit 1
 fi
 "$PYTHON_BIN" "$FIXPY" "$KERNEL_DIR/KernelSU"
+
+PROCVERPY="$ROOT_DIR/scripts/fix_proc_version.py"
+if [[ ! -f "$PROCVERPY" ]]; then
+  echo "FATAL: $PROCVERPY not found (v8 /proc/version view)" >&2
+  exit 1
+fi
+"$PYTHON_BIN" "$PROCVERPY" "$KERNEL_DIR"
 
 MAKE_ARGS=(
   ARCH="$ARCH"
