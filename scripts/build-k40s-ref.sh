@@ -89,7 +89,19 @@ if [[ "$USE_AOSP_CLANG" == "1" ]]; then
 fi
 
 git clone --depth 1 --branch "$REF_KERNEL_REF" "$REF_KERNEL_REPO" "$KERNEL_DIR"
-git clone --depth 1 --branch "$RESUKISU_REF" "$RESUKISU_REPO" "$KERNEL_DIR/KernelSU"
+# RESUKISU_REF may be a branch/tag name, or an exact commit SHA when the
+# installed manager is pinned to an older CI build. git clone --branch does
+# not accept a raw SHA, so use init + fetch-by-SHA in that case. This keeps
+# the driver/manager pair byte-for-byte matched even after upstream main
+# advances (GitHub supports reachable-SHA shallow fetch).
+if [[ "$RESUKISU_REF" =~ ^[0-9a-f]{40}$ ]]; then
+  git init -q "$KERNEL_DIR/KernelSU"
+  git -C "$KERNEL_DIR/KernelSU" remote add origin "$RESUKISU_REPO"
+  git -C "$KERNEL_DIR/KernelSU" fetch --depth 1 origin "$RESUKISU_REF"
+  git -C "$KERNEL_DIR/KernelSU" checkout --detach FETCH_HEAD
+else
+  git clone --depth 1 --branch "$RESUKISU_REF" "$RESUKISU_REPO" "$KERNEL_DIR/KernelSU"
+fi
 if [[ -n "$RESUKISU_PIN" ]]; then
   ksu_head="$(git -C "$KERNEL_DIR/KernelSU" rev-parse HEAD)"
   if [[ "$ksu_head" != "$RESUKISU_PIN" ]]; then
@@ -106,6 +118,16 @@ fi
 
 pushd "$KERNEL_DIR" >/dev/null
 bash KernelSU/kernel/setup.sh "$RESUKISU_REF"
+# setup.sh performs its own checkout using RESUKISU_REF; re-assert that the
+# final tree is still the exact commit matching the installed manager.
+if [[ -n "$RESUKISU_PIN" ]]; then
+  ksu_head_after="$(git -C "$KERNEL_DIR/KernelSU" rev-parse HEAD)"
+  if [[ "$ksu_head_after" != "$RESUKISU_PIN" ]]; then
+    echo "FATAL: setup.sh moved KernelSU to $ksu_head_after, expected $RESUKISU_PIN" >&2
+    exit 1
+  fi
+  echo "KSU version lock re-asserted after setup.sh: $ksu_head_after (manager 35257)"
+fi
 
 case "$REF_VARIANT" in
   strict-susfs)
