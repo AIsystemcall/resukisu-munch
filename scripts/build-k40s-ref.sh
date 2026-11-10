@@ -440,7 +440,10 @@ PYPORT
     ;;
 esac
 
-# --- fix: v8 stage-2 (TWO kernel-side points, both view-only) ---
+# --- fix: v9 (v8 two points + utsname sysctl, ALL view-only) ---
+# 3) kernel/utsname_sysctl.c: /proc/sys/kernel/osrelease 与 version 两个
+#    sysctl 共用 proc_do_uts_string()；对 App uid 把读缓冲换成与伪装
+#    uname 一致的值，root/system 保持真实。补齐 v8 剩下的两个通道。
 # 1) selinux_hide.c: 撤销 v7 的兜底块（它把「无效上下文应返回 EINVAL」改成了
 #    allow/deny 元组，反而新增 invalid-context access decision），并让
 #    status / access 的 seqno 从真实 status 页动态读取且同步刷新 fake 页，
@@ -463,6 +466,13 @@ if [[ ! -f "$PROCVERPY" ]]; then
   exit 1
 fi
 "$PYTHON_BIN" "$PROCVERPY" "$KERNEL_DIR"
+
+UTSPY="$ROOT_DIR/scripts/fix_utsname_sysctl.py"
+if [[ ! -f "$UTSPY" ]]; then
+  echo "FATAL: $UTSPY not found (v9 osrelease/version view)" >&2
+  exit 1
+fi
+"$PYTHON_BIN" "$UTSPY" "$KERNEL_DIR"
 
 MAKE_ARGS=(
   ARCH="$ARCH"
