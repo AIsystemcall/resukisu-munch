@@ -418,14 +418,19 @@ PYPORT
     ;;
 esac
 
-# --- fix: SELinux access/status read-back coherence (v6, shared seqno) ---
-# 受控实验证明「检测SELinux Policy」与 fake status 页无关（关掉 hide 仍在）。
-# 官方判据落在 access/status 读数一致性：上游 my_write_access() 把
-# avd.seqno 硬编码成 1，而 App 侧 status.sequence 是 4，两者不自洽。
-# v6 让二者共用 ksu_fake_status_seq=4（原生内核里二者同源于
-# avc_cache.latest_notif，本应相等）。保留 v4 的 page_address() panic 修复、
-# v5 的 policyload=1。
-# 不改 live policy、不改真实 status 页、不改任何功能状态（幂等，严格自检）。
+# --- fix: v6 baseline + ONE v7 addition (App access-oracle fallback) ---
+# v6（沿用的基线，本次不改）：status.sequence 与 access avd.seqno 共用
+# ksu_fake_status_seq=4；保留 v4 的 page_address() panic 修复、v5 的
+# policyload=1；不改 live policy、不改真实 status 页、不改任何功能状态。
+#
+# v7（本次唯一一处内核侧补齐）：my_write_access() 的失败分支原本全部
+# `goto out` 并直接返回负 errno / 0，buf 完全未填充 -> 检测方的哨兵
+# context 三组对照、加扰动、重复性检查拿不到结构一致的可比较回包，
+# 且事务未正确结束导致后续写 EBUSY。v7 在 out: 之前增加一条
+# denied-but-well-formed 的兜底回包（seqno 仍与 App status 视图同源）。
+# 只按 App uid 过滤，root/system 走原路径；不泄露 live policy 规则。
+# 边界：不换栈、不动任何 KSU/LSP 模块、不新增模块、不改调用关系。
+# 幂等，严格自检；相对 v6 的源码 diff 只有一个代码块。
 FIXPY="$ROOT_DIR/scripts/fix_selinux_hide_status.py"
 if [[ ! -f "$FIXPY" ]]; then
   echo "FATAL: $FIXPY not found (selinux_hide status view sync)" >&2
